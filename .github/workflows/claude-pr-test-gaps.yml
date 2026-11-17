@@ -1,0 +1,58 @@
+name: Claude PR Test Gaps
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# One run per PR; a new push cancels the stale run.
+concurrency:
+  group: claude-test-gaps-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  write-missing-tests:
+    # Same-repo PRs only: fork PRs get no secrets and a read-only token.
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'claude[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write        # push test commits to the PR branch
+      pull-requests: write   # post the summary comment
+      issues: write
+      id-token: write        # required by claude-code-action auth
+
+    steps:
+      - name: Check out the PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0     # full history so Claude can diff against the base
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Baseline test run
+        run: python -m pytest -q
+
+      - name: Claude writes the missing tests
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            BASE BRANCH: ${{ github.event.pull_request.base.ref }}
+            HEAD BRANCH: ${{ github.event.pull_request.head.ref }}
+
+            Follow the instructions in .claude/prompts/test-gap-review.md exactly.
+          claude_args: |
+            --max-turns 20
+            --model claude-sonnet-5-5
+            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(python -m pytest:*),Bash(gh pr comment:*)"
